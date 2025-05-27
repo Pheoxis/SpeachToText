@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
-
 from downsampling import DownsamplingNetwork
 from rvq import ResidualVectorQuantizer
 from self_attention import Transformer
+from dataset import get_tokenizer
 
 
 class TranscribeModel(nn.Module):
@@ -46,33 +46,53 @@ class TranscribeModel(nn.Module):
 
     def forward(self, x: torch.Tensor):
         loss = torch.tensor(0.0)
-        
-        # Remove this line - it's adding an unnecessary dimension
-        # x = x.unsqueeze(1)
-        
-        # Instead, check the input shape and handle it properly
-        if x.dim() == 2:  # If input is [batch_size, sequence_length]
-            x = x.unsqueeze(1)  # Add channel dimension -> [batch_size, 1, sequence_length]
-        elif x.dim() == 3:  # If input is already [batch_size, channels, sequence_length]
-            pass  # Keep as is
-        else:
-            raise ValueError(f"Expected 2D or 3D input tensor, got {x.dim()}D tensor with shape {x.shape}")
-        
-        x = self.downsampling_network(x)
-        x = self.pre_rvq_transformer(x)
-        x, loss = self.rvq(x)
-        x = self.output_layer(x)
-        x = torch.log_softmax(x, dim=-1)
-        
+        x = x.unsqueeze(1)  # Add channel dimension
+        x = self.downsampling_network(x)  # Downsample input
+        x = self.pre_rvq_transformer(x)  # Apply transformer layers
+        x, loss = self.rvq(x)  # Residual vector quantization
+        x = self.output_layer(x)  # Final output projection
+        x = torch.log_softmax(x, dim=-1)  # Apply log softmax
         return x, loss
 
 
     def save(self, path: str):
         print("Saving model to", path)
-        torch.save({"model": self.state_dict(),"options":self.options}, path)
+        torch.save({
+            "model_state_dict": self.state_dict(),  # Zmień z "model" na "model_state_dict"
+            "options": self.options
+        }, path)
     
-    def load(self, path: str):
+    @classmethod
+    def load(cls, path: str):  # ✅ Teraz to jest metoda klasowa
         print("Loading model from", path)
-        model = TranscribeModel(**torch.load(path)["options"])
-        model.load_state_dict(torch.load(path)["model"])
+        checkpoint = torch.load(path, map_location='cpu')
+        
+        # Sprawdź różne formaty zapisu
+        if 'options' in checkpoint:
+            options = checkpoint['options']
+            model = cls(**options)
+            
+            if 'model' in checkpoint:
+                model.load_state_dict(checkpoint['model'])
+            elif 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            # Fallback dla starszych formatów
+            print("Warning: Loading checkpoint without options, using default parameters")
+            tokenizer = get_tokenizer()  # Musisz zaimportować get_tokenizer
+            model = cls(
+                num_codebooks=2,  # Reduced from 4
+                codebook_size=32,  # Reduced from 64
+                embedding_dim=128,  # Reduced from 256
+                num_transformer_layers=3,  # Reduced from 6
+                vocab_size=len(tokenizer.get_vocab()),
+                strides=[4, 4, 2],  # Less aggressive downsampling
+                initial_mean_pooling_kernel_size=2,
+                max_seq_length=200,  # Reduced from 400
+            )
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+        
         return model

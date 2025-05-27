@@ -45,19 +45,16 @@ def collate_fn(batch):
         
 def get_tokenizer(save_path="tokenizer.json"):
     tokenizer = Tokenizer(models.BPE())
+    tokenizer.add_special_tokens(["□"])
+    tokenizer.add_tokens(list("ABCDEFGHIJKLMNOPQRSTUVWXYZ "))
     
-    # Add more special tokens for better handling
-    special_tokens = ["<pad>", "<unk>", "<s>", "</s>", "<□>"]
-    tokenizer.add_special_tokens(special_tokens)
-    
-    # Add all printable ASCII characters
-    chars = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?'-\" ")
-    tokenizer.add_tokens(chars)
-    
-    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()  # Better than ByteLevel for speech
-    tokenizer.decoder = decoders.BPEDecoder()
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
+    tokenizer.decoder = decoders.ByteLevel()
+    tokenizer.blank_token = tokenizer.token_to_id("□")
+    tokenizer.save(save_path)
     
     return tokenizer
+
 
 
 class CommonVoiceDataset(Dataset):
@@ -117,14 +114,14 @@ def get_dataset(
     )
     return dataloader
 
-if __name__ == "__main__":
-    dataloader = get_dataset(
-        batch_size=32
-    )
-    for batch in dataloader:
-        audio = batch["audio"]
-        input_ids = batch["input_ids"]
-        print(audio.shape, input_ids)
+# if __name__ == "__main__":
+#     dataloader = get_dataset(
+#         batch_size=32
+#     )
+#     for batch in dataloader:
+#         audio = batch["audio"]
+#         input_ids = batch["input_ids"]
+#         print(audio.shape, input_ids)
         
-        breakpoint()
-        break
+#         breakpoint()
+#         break

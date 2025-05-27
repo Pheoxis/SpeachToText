@@ -4,33 +4,25 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 
-def calculate_attention(values, keys, query, chunk_size=256):
-    """Memory-efficient chunked attention."""
-    batch_size, seq_len, embed_dim = query.shape
+def calculate_attention(
+    values: torch.Tensor,
+    keys: torch.Tensor,
+    query: torch.Tensor,
+):
+    # Compute attention scores using query-key dot product
+    attention_scores = torch.matmul(query, keys.transpose(-2, -1))
     
-    if seq_len <= chunk_size:
-        # Normal attention for short sequences
-        attention_scores = torch.matmul(query, keys.transpose(-2, -1))
-        attention_scores = attention_scores / math.sqrt(keys.shape[-1])
-        attention_scores = torch.softmax(attention_scores, dim=-1)
-        attention = torch.matmul(attention_scores, values)
-        return attention, attention_scores
+    # Scale by square root of key dimension (scaled dot-product attention)
+    attention_scores = attention_scores / math.sqrt(keys.shape[-1])
     
-    # Chunked attention for long sequences
-    output = torch.zeros_like(query)
+    # Apply softmax to get attention weights
+    attention_scores = F.softmax(attention_scores, dim=-1)
     
-    for i in range(0, seq_len, chunk_size):
-        end_i = min(i + chunk_size, seq_len)
-        query_chunk = query[:, i:end_i, :]
-        
-        attention_scores = torch.matmul(query_chunk, keys.transpose(-2, -1))
-        attention_scores = attention_scores / math.sqrt(keys.shape[-1])
-        attention_scores = torch.softmax(attention_scores, dim=-1)
-        
-        attention_chunk = torch.matmul(attention_scores, values)
-        output[:, i:end_i, :] = attention_chunk
+    # Apply attention weights to values
+    attention = torch.matmul(attention_scores, values)
     
-    return output, None
+    return attention, attention_scores
+
 
 
 
@@ -39,30 +31,45 @@ class FeedForward(nn.Module):
         super().__init__()
         self.layer1 = nn.Linear(embed_size, embed_size)
         self.layer2 = nn.Linear(embed_size, embed_size)
-    
+
     def forward(self, x):
         x = self.layer1(x)
-        x = F.gelu(x)
+        x = F.gelu(x)  # GELU activation function
         x = self.layer2(x)
         return x
+
 class SelfAttentionLayer(nn.Module):
     def __init__(self, embed_size: int):
         super().__init__()
         self.embed_size = embed_size
+        
+        # Linear projections for queries, keys, and values
         self.query_dense = nn.Linear(embed_size, embed_size)
         self.key_dense = nn.Linear(embed_size, embed_size)
         self.value_dense = nn.Linear(embed_size, embed_size)
-    
+
     def forward(self, embeddings: torch.Tensor):
+        # Project embeddings to queries, keys, and values
         query = self.query_dense(embeddings)
         key = self.key_dense(embeddings)
         value = self.value_dense(embeddings)
+        
+        # Calculate attention using the previously defined function
         attention, _ = calculate_attention(value, key, query)
+        
         return attention
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_size: int, num_heads: int):
         super().__init__()
+        
+        # Ensure embedding size is divisible by number of heads
         assert (
             embed_size % num_heads == 0
         ), "Embedding size must be divisible by number of heads"
@@ -71,12 +78,52 @@ class MultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_size // num_heads
         
-        # Single linear layer for each of Q, K, V that will be split into heads
+        # Linear projection layers (these were missing from your __init__)
         self.query = nn.Linear(embed_size, embed_size)
         self.key = nn.Linear(embed_size, embed_size)
         self.value = nn.Linear(embed_size, embed_size)
-        self.fc_out = nn.Linear(embed_size, embed_size)
-        self.attention = SelfAttentionLayer(embed_size)
+        self.output_linear = nn.Linear(embed_size, embed_size)  # Fixed typo: "otput_liear"
+    
+    def forward(self, embeddings: torch.Tensor):
+        batch_size = embeddings.shape[0]
+        seq_length = embeddings.shape[1]
+        
+        # Linear projections and reshape to separate heads
+        query = self.query(embeddings).reshape(
+            batch_size, seq_length, self.num_heads, self.head_dim
+        )
+        key = self.key(embeddings).reshape(
+            batch_size, seq_length, self.num_heads, self.head_dim
+        )
+        value = self.value(embeddings).reshape(
+            batch_size, seq_length, self.num_heads, self.head_dim
+        )
+        
+        # Transpose for efficient attention computation
+        query = query.transpose(1, 2)  # [batch, num_heads, seq_len, head_dim]
+        key = key.transpose(1, 2)      # [batch, num_heads, seq_len, head_dim]
+        value = value.transpose(1, 2)  # [batch, num_heads, seq_len, head_dim]
+        
+        # Compute scaled dot-product attention
+        attention_scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(
+            self.head_dim
+        )
+        
+        # Apply softmax to convert scores to probabilities
+        attention_scores = F.softmax(attention_scores, dim=-1)
+        
+        # Apply attention weights to values
+        attention = torch.matmul(attention_scores, value)
+        
+        # Concatenate heads back together (this was the missing part)
+        attention = attention.transpose(1, 2).contiguous().reshape(
+            batch_size, seq_length, self.embed_size
+        )
+        
+        # Final output projection
+        output = self.output_linear(attention)
+        
+        return output
         
 class TransformerBlock(nn.Module):
     def __init__(self, embed_size: int):
@@ -84,52 +131,45 @@ class TransformerBlock(nn.Module):
         self.attention_layer = SelfAttentionLayer(embed_size)
         self.feed_forward = FeedForward(embed_size)
         self.layer_norm1 = nn.LayerNorm(embed_size)
-        
+        # self.layer_norm2 = nn.LayerNorm(embed_size)  # ADD THIS
+        # self.dropout = nn.Dropout(0.1)
     def forward(self, x: torch.Tensor):
         context = self.attention_layer(x)
         context = self.layer_norm1(context)
         context = self.feed_forward(context)
         context = F.gelu(context)
         output = context + x
+        
         return output
+
 
 class SinusoidalPositionEncoding(nn.Module):
     def __init__(self, embed_size: int, max_seq_length: int):
         super().__init__()
-        self.embed_size = embed_size
-        self.max_seq_length = max_seq_length
         
-        # Create initial positional embeddings
-        pe = self._create_positional_encoding(max_seq_length, embed_size)
-        self.register_buffer("positional_embedding", pe)
-
-    def _create_positional_encoding(self, seq_length: int, embed_size: int):
-        """Create positional encoding for given sequence length."""
-        position = torch.arange(seq_length).unsqueeze(1)
+        # Create position indices
+        position = torch.arange(max_seq_length).unsqueeze(1)
+        
+        # Calculate division term for frequency scaling
         div_term = torch.exp(
             torch.arange(0, embed_size, 2) * (-math.log(10000.0) / embed_size)
         )
         
-        pe = torch.zeros(seq_length, embed_size)
+        # Initialize positional encoding matrix
+        pe = torch.zeros(max_seq_length, embed_size)
+        
+        # Apply sine to even indices
         pe[:, 0::2] = torch.sin(position * div_term)
+        
+        # Apply cosine to odd indices  
         pe[:, 1::2] = torch.cos(position * div_term)
-        return pe
+        
+        # Register as buffer (not a parameter, but part of model state)
+        self.register_buffer("positional_embedding", pe)
 
     def forward(self, x: torch.Tensor):
-        seq_len = x.size(1)
-        
-        # If input sequence is longer than pre-computed embeddings, extend them
-        if seq_len > self.positional_embedding.size(0):
-            # Create new positional encoding for the required length
-            extended_pe = self._create_positional_encoding(seq_len, self.embed_size)
-            extended_pe = extended_pe.to(self.positional_embedding.device)
-            
-            # Update the buffer with the extended version
-            self.register_buffer("positional_embedding", extended_pe)
-        
-        return x + self.positional_embedding[:seq_len, :]
-
-
+        return x + self.positional_embedding[: x.size(1), :]
+    
 class Transformer(nn.Module):
     def __init__(self, embed_size: int, num_layers: int, max_seq_length: int):
         super().__init__()
